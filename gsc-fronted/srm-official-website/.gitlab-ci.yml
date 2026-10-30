@@ -1,0 +1,47 @@
+stages:
+  - deploy
+
+# ================= 公共配置 =================
+.common-deploy:
+  tags:
+    - deploy
+  resource_group: $CI_COMMIT_REF_SLUG
+  interruptible: true
+  only:
+    - main
+  before_script:
+    - echo "Build project on branch [$CI_COMMIT_BRANCH]"
+    - echo "Node version:" && node -v
+    - echo "pnpm version:" && pnpm -v
+    - pnpm install --no-frozen-lockfile --registry=https://registry.npmmirror.com
+    - pnpm build --mode=$BUILD_MODE
+
+# ================= 中国服务器部署 =================
+deploy-cn:
+  extends: .common-deploy
+  stage: deploy
+  variables:
+    BUILD_MODE: "main"
+    HOST: "8.163.35.194"
+    USER: "greensmartplanet-gsc"
+    PASSWORD: "5lNDZRRI7uTFLTlhSMC1"
+    SITE: "gsc.greensmartplanet.cn"
+  script:
+    - rsync -avz --delete dist/ -e "sshpass -p $PASSWORD ssh -o StrictHostKeyChecking=no" $USER@$HOST:/home/$USER/htdocs/$SITE
+  after_script:
+    - rm -rf "$CI_PROJECT_DIR"/*
+
+# ================= 全球服务器部署 =================
+deploy-global:
+  extends: .common-deploy
+  stage: deploy
+  variables:
+    BUILD_MODE: "main"
+    HOST: "43.216.254.70"
+    USER: "greensmartplanet-gsc"
+    PASSWORD: "0Ae251wvlCpgs18cmbT8"
+    SITE: "gsc.greensmartplanet.com"
+  script:
+    - rsync -avz --delete dist/ -e "sshpass -p $PASSWORD ssh -o StrictHostKeyChecking=no" $USER@$HOST:/home/$USER/htdocs/$SITE
+  after_script:
+    - rm -rf "$CI_PROJECT_DIR"/*

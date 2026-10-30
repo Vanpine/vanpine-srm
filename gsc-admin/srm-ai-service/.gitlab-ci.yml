@@ -1,0 +1,87 @@
+stages:
+  - test
+  - deploy
+
+default:
+  interruptible: true
+
+variables:
+  DEPLOY_HOST: "120.77.169.224"
+  DEPLOY_USER: "greensmartplanet-ai-gsc"
+  DEPLOY_PASSWORD: "fXr3F9OpdYr6kprq7aXS"
+  DEPLOY_PATH: "/home/greensmartplanet-ai-gsc/srm-ai-service"
+  SYSTEMD_SERVICE: "srm-ai-service"
+  HEALTH_URL: "http://127.0.0.1:8100/api/health"
+  PIP_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple"
+
+.test-base:
+  stage: test
+  tags:
+    - deploy
+  cache:
+    key:
+      files:
+        - requirements.txt
+    paths:
+      - .pip-cache/
+  before_script:
+    - python3 --version
+    - python3 -m venv .ci-venv
+    - .ci-venv/bin/pip install --upgrade pip
+    - .ci-venv/bin/pip install --cache-dir .pip-cache/ -r requirements.txt -i "$PIP_INDEX_URL"
+  script:
+    - .ci-venv/bin/python -m compileall -q app
+    - .ci-venv/bin/python -c "import app.main"
+
+test:
+  extends: .test-base
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+
+.deploy-base:
+  tags:
+    - deploy
+  resource_group: production
+  before_script:
+    - export RSYNC_RSH="sshpass -p ${DEPLOY_PASSWORD} ssh -o StrictHostKeyChecking=no"
+    - export SSH_CMD="sshpass -p ${DEPLOY_PASSWORD} ssh -o StrictHostKeyChecking=no"
+
+deploy-main:
+  extends: .deploy-base
+  stage: deploy
+  needs:
+    - test
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    - echo "Deploy SRM AI Service to $DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH"
+    - |
+      rsync -avz --delete \
+        --exclude '.git/' \
+        --exclude '.venv/' \
+        --exclude '.ci-venv/' \
+        --exclude 'venv/' \
+        --exclude '__pycache__/' \
+        --exclude '.pytest_cache/' \
+        --exclude '.mypy_cache/' \
+        --exclude '.env' \
+        --exclude '.env.*' \
+        --exclude '*.pyc' \
+        --exclude '.pip-cache/' \
+        ./ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
+    - |
+      $SSH_CMD "$DEPLOY_USER@$DEPLOY_HOST" "
+        set -e
+        cd '$DEPLOY_PATH'
+        if [ ! -d .venv ]; then
+          python3 -m venv .venv
+        fi
+        .venv/bin/python -m pip install --upgrade pip
+        .venv/bin/pip install -r requirements.txt -i '$PIP_INDEX_URL'
+        sudo systemctl restart '$SYSTEMD_SERVICE'
+        sleep 3
+        curl -sf '$HEALTH_URL'
+        echo
+        echo 'Deploy succeeded.'
+      "

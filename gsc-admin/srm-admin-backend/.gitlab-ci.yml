@@ -1,0 +1,70 @@
+stages:
+  - deploy
+
+variables:
+  # ===== 部署目标（沿用原前端脚本的服务器/账号）=====
+  HOST: "120.77.169.224"
+  DEPLOY_USER: "api-admin-gsc"
+  DEPLOY_PASSWORD: "RbJKtA9CY3mF9skhdJE9"
+  # 服务器上存放 jar 的目录
+  DEPLOY_DIR: "/home/api-admin-gsc/app"
+  # Maven 版本号（与根 pom.xml 保持一致）
+  PROJECT_VERSION: "0.0.1-SNAPSHOT"
+  # 可部署微服务模块（目录名 = systemd 服务名 = jar 前缀）
+  DEPLOY_MODULES: "gsc-gateway gsc-service-platform gsc-service-supplier gsc-service-trade gsc-service-delivery gsc-service-ai"
+  # 重启顺序：先业务服务，最后网关（避免网关路由到未就绪实例）
+  RESTART_ORDER: "gsc-service-platform gsc-service-supplier gsc-service-trade gsc-service-delivery gsc-service-ai gsc-gateway"
+  # 加速 Maven，仓库缓存到项目目录便于 CI cache
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository -Dstyle.color=never"
+  MAVEN_CLI_OPTS: "--batch-mode --errors --show-version"
+
+# 缓存 Maven 本地仓库，避免每次全量下依赖
+cache:
+  key: "$CI_COMMIT_REF_SLUG-maven"
+  paths:
+    - .m2/repository
+
+# 构建 + 部署合并为一个 job，避免多个 fat jar 上传 artifacts 触发 413
+build_deploy:
+  stage: deploy
+  tags:
+    - deploy
+  interruptible: true
+  resource_group: $CI_COMMIT_REF_SLUG
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: on_success
+    - when: never
+  script:
+    - echo "Build & deploy microservices on branch [$CI_COMMIT_BRANCH]"
+    - echo "Java version:" && java -version
+    - echo "Maven version:" && mvn -v
+    # 1. 构建可部署服务及其依赖模块
+    - >
+      mvn $MAVEN_CLI_OPTS clean install -DskipTests
+      -pl gsc-gateway,gsc-service-platform,gsc-service-supplier,gsc-service-trade,gsc-service-delivery,gsc-service-ai
+      -am
+    # 2. 上传 jar 到服务器
+    - echo "Deploy to $DEPLOY_USER@$HOST:$DEPLOY_DIR"
+    - export SSHPASS="$DEPLOY_PASSWORD"
+    - sshpass -e ssh -o StrictHostKeyChecking=no $DEPLOY_USER@$HOST "mkdir -p $DEPLOY_DIR"
+    - |
+      for module in $DEPLOY_MODULES; do
+        jar="${module}-${PROJECT_VERSION}.jar"
+        echo ">>> Upload $jar"
+        sshpass -e rsync -avz -e "ssh -o StrictHostKeyChecking=no" \
+          "${module}/target/${jar}" \
+          "$DEPLOY_USER@$HOST:$DEPLOY_DIR/${jar}.new"
+        sshpass -e ssh -o StrictHostKeyChecking=no $DEPLOY_USER@$HOST \
+          "mv -f $DEPLOY_DIR/${jar}.new $DEPLOY_DIR/${jar}"
+      done
+    # 3. 按顺序重启 systemd 服务
+    - |
+      for service in $RESTART_ORDER; do
+        echo ">>> Restart $service"
+        sshpass -e ssh -o StrictHostKeyChecking=no $DEPLOY_USER@$HOST \
+          "sudo systemctl restart $service && sudo systemctl is-active $service"
+      done
+  after_script:
+    - echo "🧹 清理构建目录..."
+    - rm -rf "$CI_PROJECT_DIR"/target gsc-*/target

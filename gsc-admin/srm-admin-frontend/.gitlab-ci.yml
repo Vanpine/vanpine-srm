@@ -1,0 +1,41 @@
+stages:
+  - test
+
+
+build-dev:
+  stage: test
+  tags:
+    - deploy
+  resource_group: $CI_COMMIT_REF_SLUG
+  interruptible: true
+
+  variables:
+    HOST: "120.77.169.224"
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      variables:
+        BUILD_MODE: "main"
+        USER: "greensmartplanet-admin-gsc"
+        PASSWORD: "Nq73nQVDaLCRzYUuX1PE"
+        SITE: "admin.gsc.greensmartplanet.cn"
+      when: on_success
+
+    - when: never
+
+  script:
+    - echo "Build project on branch [$CI_COMMIT_BRANCH]"
+    - echo "Node version:" && node -v
+    - echo "pnpm version:" && pnpm -v
+    - echo "Install dependencies"
+    - pnpm install --no-frozen-lockfile --registry=https://registry.npmmirror.com
+    - pnpm build --mode=$BUILD_MODE
+    - export SSHPASS="$PASSWORD"
+    - sshpass -e rsync -avz --delete -e "ssh -o StrictHostKeyChecking=no" dist/ $USER@$HOST:/home/$USER/htdocs/$SITE/
+
+  after_script:
+    - echo "🧹 清理构建目录..."
+    - rm -rf "$CI_PROJECT_DIR"/*
+
+
+
